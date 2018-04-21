@@ -1,19 +1,25 @@
 package com.usel.maglev.maglev_app
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.support.v7.app.AppCompatActivity
 import android.os.Bundle
 import android.bluetooth.BluetoothAdapter
-import android.content.Intent
 import android.widget.Toast
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothSocket
-import android.content.BroadcastReceiver
-import android.content.Context
+import android.content.*
 import java.lang.Thread
-import android.content.IntentFilter
+import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
+import android.support.annotation.ColorInt
 import android.util.Log
+import android.util.TypedValue
+import android.widget.EditText
+import android.widget.SeekBar
+import android.widget.TextView
 import kotlinx.android.synthetic.main.activity_main.*
+import kotlinx.android.synthetic.main.activity_main.view.*
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
@@ -37,8 +43,25 @@ class MainActivity : AppCompatActivity() {
         val REQUEST_ENABLE_BT = 1
     }
     private val TAG = "MainActivity"
+    private var targetBluetoothAddress = "98:01:A7:AE:92:22"        // placeholder
+    private fun getTargetBluetoothAddress() {
+        val builder = AlertDialog.Builder(this)
+        builder.setTitle("Set target bluetooth address (MAC)")
+        val input = EditText(this)
+        builder.setView(input)
+        builder.setPositiveButton("OK", object: DialogInterface.OnClickListener {
+            override fun onClick(dialog: DialogInterface?, which: Int) {
+                targetBluetoothAddress = input.text.toString()
+            }
+        }).setNegativeButton("Cancel", object: DialogInterface.OnClickListener {
+            override fun onClick(dialog: DialogInterface?, which: Int) {
+                dialog?.cancel()
+            }
+        })
+        builder.show()
+    }
     object protocol {
-        val delimiter = "\n"
+        val delimiter = ";"
     }
 
     /**
@@ -78,8 +101,32 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        submit1.setOnClickListener {
-            sendMessage("1submit")
+        fun getColorPreviewColorInt(): Int = (color_preview.background as ColorDrawable).color
+        data class component(val seekbar: SeekBar, val value: TextView)
+        val seekbars = arrayOf(
+            component(red_seekbar, red_value), component(green_seekbar, green_value), component(blue_seekbar, blue_value)
+        )
+        seekbars.forEachIndexed { i, component ->
+            component.seekbar.setOnSeekBarChangeListener(object: SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val colorInt = getColorPreviewColorInt()
+                    val newColor = Color.rgb(
+                        if (i == 0) progress else Color.red(colorInt),
+                        if (i == 1) progress else Color.green(colorInt),
+                        if (i == 2) progress else Color.blue(colorInt)
+                    )
+                    color_preview.setBackgroundColor(newColor)
+                    component.value.text = progress.toString()
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) { }
+                override fun onStopTrackingTouch(seekBar: SeekBar?) { }
+            })
+        }
+
+        submit_color.setOnClickListener {
+            val colorInt = getColorPreviewColorInt()
+            val msg = "r${Color.red(colorInt)}g${Color.green(colorInt)}b${Color.blue(colorInt)}"
+            sendMessage(msg)
         }
     }
 
@@ -104,8 +151,10 @@ class MainActivity : AppCompatActivity() {
     /**
      * third node
      * If bluetoothAdapter isEnabled, setup connection
+     * **paired** -> connect -> use
      */
     private fun setupConnection(context: Context) {
+        getTargetBluetoothAddress()
         val pairedDevices = bluetoothAdapter.bondedDevices
         /**
          * @todo multiple paired (memorised) devices, don't need to be connected || connect to multiple at the same time?
@@ -132,8 +181,9 @@ class MainActivity : AppCompatActivity() {
             /**
              * Thread goes here with it
              * hardcoded: if (it is arduino || mac) {...}
+             * todo: dynamic to arduino
              */
-            if (it.address == "98:01:A7:AE:92:22") {
+            if (it.address == targetBluetoothAddress) {
                 val _connection = BluetoothConnection(it)
                 _connection.start()
                 bluetoothConnection = _connection
@@ -143,10 +193,16 @@ class MainActivity : AppCompatActivity() {
 
     }
 
+    /**
+     * paired -> connect -> **use**
+     */
     private fun sendMessage(msg: String) {
         bluetoothConnection?.let {
-            it.write((msg + protocol.delimiter).toByteArray())
-            Toast.makeText(this, "sendMessage: "+msg.toByteArray(), Toast.LENGTH_LONG).show()
+            val delimitedMsg = msg + protocol.delimiter
+            val bitMsg = delimitedMsg.toByteArray()
+            it.write(bitMsg)
+            Toast.makeText(this, "sendBitMessage: $bitMsg\nsendDelimitedMessage: $delimitedMsg", Toast.LENGTH_LONG).show()
+            Log.d(TAG, delimitedMsg)
         }
     }
 
@@ -159,6 +215,7 @@ class MainActivity : AppCompatActivity() {
 //        discoveryFinishReceiver?.let {
 //            unregisterReceiver(it)
 //        }
+        bluetoothConnection?.cancel()
     }
 
 
@@ -167,7 +224,7 @@ class MainActivity : AppCompatActivity() {
     /**
      * Thread class for connection
      * inner class can access parent properties
-     * pair -> connect -> use
+     * paired -> **connect** -> use
      *
      * @constructor pass bluetoothDevice and isSecure to create an instance thread
      * @run overridden to execute socket connection
@@ -203,7 +260,7 @@ class MainActivity : AppCompatActivity() {
                 tmp = device.createRfcommSocketToServiceRecord(uuid)
             })
             socket = tmp
-            socket.connect()
+            attempt({ socket.connect() })
 
             val connectionThread = Thread(object: Runnable {
                 override fun run() {
@@ -214,7 +271,7 @@ class MainActivity : AppCompatActivity() {
                 }
             })
 
-            connectionThread.start()
+//            connectionThread.start()
             lateinit var tmpIn: InputStream
             lateinit var tmpOut: OutputStream
             val bufferSize = 1024
@@ -237,6 +294,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     inputStream.read(buffer)
                 } catch (e: IOException) {
+                    Log.d(TAG, "run is broken")
                     e.printStackTrace()
                     break
                 }
